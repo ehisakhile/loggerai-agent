@@ -1,6 +1,6 @@
 # LoggerAI server agent
 
-A small program that shows you what your Linux servers are doing, in [LoggerAI](https://loggerai.uk): CPU, memory, disks, network, and the busiest processes. It's one file with nothing else to install.
+A small program that shows you what your Linux servers are doing, in [LoggerAI](https://loggerai.uk): CPU, memory, disks, network, the busiest processes and, if you allow it, Docker containers and their logs. It's one file with nothing else to install.
 
 ## Install
 
@@ -38,11 +38,27 @@ To see exactly what it would send, without sending anything:
 loggerai-agent print
 ```
 
+## Docker containers
+
+This is off unless you turn it on. If Docker is installed, the installer asks. In a script, set `LOGGERAI_DOCKER=true`, and `LOGGERAI_DOCKER_LOGS=true` for logs too. To change your mind later, run the installer again with them set to `false`.
+
+**Know what you're granting.** Docker's socket can't be opened read-only, so anything that can use it can control Docker, which is as good as root on that machine. Turning this on adds the agent's service to the `docker` group. The agent only reads: anything except listing containers and reading their details, stats and logs is refused in its code, and there's a test for that. But that limit is in the agent, not in Docker. To enforce it outside the agent, point `docker_socket` at a read-only socket proxy.
+
+With it on, the agent sends each container's name, image, state, health, restarts, CPU, memory and network. Docker's answers also contain each container's environment variables and command. The agent skips those fields when it reads the answer, so it never keeps or sends them.
+
+With logs on, it also sends what your containers write to stdout and stderr, every 15 seconds:
+
+- Known secrets are masked on your server before anything is sent: passwords, tokens, API keys, database URLs and card numbers. Masking can't catch everything, so check it against your own logs.
+- To keep a container's logs out completely, give it the label `loggerai.logs=false`.
+- Logs start from when the agent starts. It doesn't send old ones.
+- A very busy container sends its latest lines each time, so some can be skipped. Containers share the budget evenly, so a loud one can't silence the others.
+- LoggerAI keeps them for 14 days, and needs ClickHouse to store them.
+
 ## What it doesn't do
 
 - It never sends command lines, environment variables or file contents.
 - It opens no ports. It only makes outbound HTTPS calls to LoggerAI.
-- It takes no commands from LoggerAI, so a compromised server can't tell it to do anything.
+- It takes no commands from LoggerAI, so nothing on LoggerAI's side can tell it to do anything.
 - It runs as its own unprivileged user, in a locked-down systemd service limited to 128 MB of memory and 10% of one CPU.
 - It doesn't follow redirects, so your key can't be sent anywhere else.
 
@@ -63,6 +79,9 @@ In `/etc/loggerai/agent.conf`, or as environment variables. Restart the service 
 | `environment` | `LOGGERAI_ENVIRONMENT` | `production` |
 | `host` | `LOGGERAI_HOST` | the machine's name |
 | `allow_http` | `LOGGERAI_ALLOW_HTTP` | off. The endpoint must use https unless it's this machine |
+| `docker` | `LOGGERAI_DOCKER` | off |
+| `docker_logs` | `LOGGERAI_DOCKER_LOGS` | off |
+| `docker_socket` | `LOGGERAI_DOCKER_SOCKET` | `/var/run/docker.sock` |
 
 `loggerai-agent check` sends one report, to test the key and connection.
 

@@ -29,6 +29,9 @@ type Batch struct {
 	Host        string   `json:"host"`
 	Hosts       []Host   `json:"hosts"`
 	Servers     []Server `json:"servers"`
+
+	Containers    []Container `json:"containers,omitempty"`
+	ContainerLogs []LogLine   `json:"container_logs,omitempty"`
 }
 
 type Host struct {

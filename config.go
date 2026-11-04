@@ -21,6 +21,9 @@ type Config struct {
 	Environment string
 	Host        string
 	AllowHTTP   bool
+	Docker      bool // read containers: off unless the installer was told to
+	DockerLogs  bool // and send what they log
+	DockerSock  string
 }
 
 func procRoot() string {
@@ -86,6 +89,9 @@ func loadConfig(needKey bool) (Config, error) {
 		Environment: pick("environment", "LOGGERAI_ENVIRONMENT", "production"),
 		Host:        pick("host", "LOGGERAI_HOST", host),
 		AllowHTTP:   pick("allow_http", "LOGGERAI_ALLOW_HTTP", "") == "true",
+		Docker:      pick("docker", "LOGGERAI_DOCKER", "") == "true",
+		DockerLogs:  pick("docker_logs", "LOGGERAI_DOCKER_LOGS", "") == "true",
+		DockerSock:  pick("docker_socket", "LOGGERAI_DOCKER_SOCKET", ""),
 	}
 	if cfg.Host == "" {
 		cfg.Host = "server"

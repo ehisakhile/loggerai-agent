@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -321,5 +323,148 @@ func TestARefusedKeyBacksOffAtOnce(t *testing.T) {
 	q.Flush(context.Background(), now)
 	if q.next != now.Add(backoffMax) {
 		t.Fatal(q.next)
+	}
+}
+
+func TestDockerReadsOnly(t *testing.T) {
+	called := 0
+	r := readOnly{roundTrip(func(*http.Request) (*http.Response, error) { called++; return nil, errors.New("reached docker") })}
+	id := strings.Repeat("a", 64)
+	for _, tc := range []struct {
+		method, path string
+		allowed      bool
+	}{
+		{"GET", "/containers/json", true},
+		{"GET", "/containers/" + id + "/json", true},
+		{"GET", "/containers/" + id + "/stats", true},
+		{"GET", "/containers/" + id + "/logs", true},
+		{"POST", "/containers/" + id + "/stop", false},
+		{"POST", "/containers/" + id + "/exec", false},
+		{"POST", "/containers/create", false},
+		{"DELETE", "/containers/" + id, false},
+		{"GET", "/containers/" + id + "/archive", false}, // would read files out of a container
+		{"GET", "/containers/" + id + "/export", false},
+		{"GET", "/images/json", false},
+		{"GET", "/secrets", false},
+		{"POST", "/containers/json", false},
+		{"GET", "/containers/../secrets", false},
+	} {
+		req, _ := http.NewRequest(tc.method, "http://docker"+tc.path, nil)
+		called = 0
+		_, err := r.RoundTrip(req)
+		if (called == 1) != tc.allowed {
+			t.Errorf("%s %s: reached docker=%v, err=%v", tc.method, tc.path, called == 1, err)
+		}
+	}
+}
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestContainerEnvironmentIsNeverDecoded(t *testing.T) {
+	var in dockerInspect
+	raw := `{"RestartCount":2,"State":{"ExitCode":1},"Config":{"Tty":true,"Env":["DB_PASSWORD=hunter2"],"Cmd":["--token=hunter2"]},"Args":["hunter2"]}`
+	if err := json.Unmarshal([]byte(raw), &in); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(in)
+	if strings.Contains(string(b), "hunter2") || in.RestartCount != 2 || !in.Config.Tty {
+		t.Fatal(string(b))
+	}
+	var item dockerListItem
+	json.Unmarshal([]byte(`{"Id":"a","Command":"run --password hunter2","Names":["/web"],"Labels":{"x":"y"}}`), &item)
+	b, _ = json.Marshal(Container{Name: containerName(item)})
+	if strings.Contains(string(b), "hunter2") || containerName(item) != "web" {
+		t.Fatal(string(b))
+	}
+}
+
+func frame(stream byte, text string) []byte {
+	b := []byte{stream, 0, 0, 0, 0, 0, 0, 0}
+	binary.BigEndian.PutUint32(b[4:], uint32(len(text)))
+	return append(b, text...)
+}
+
+func TestLogFrames(t *testing.T) {
+	raw := append(frame(1, "2026-11-04T22:00:00.1Z one\n2026-11-04T22:00:00.2Z two\n"), frame(2, "2026-11-04T22:00:00.3Z bad\r\n")...)
+	got := splitFrames(raw, false)
+	if len(got) != 3 || got[2].stream != "stderr" || got[1].text != "2026-11-04T22:00:00.2Z two" {
+		t.Fatalf("%+v", got)
+	}
+	if tty := splitFrames([]byte("a\nb\n"), true); len(tty) != 2 || tty[0].stream != "stdout" {
+		t.Fatalf("%+v", tty)
+	}
+	if short := splitFrames(append(frame(1, "whole\n"), 1, 0, 0, 0, 0, 0, 0, 200, 'x'), false); short[len(short)-1].text != "x" {
+		t.Fatalf("a cut-off frame: %+v", short)
+	}
+}
+
+func TestCutKeepsCharactersWhole(t *testing.T) {
+	if got := cut("aé", 2); got != "a" {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestMaskingSecretsInLogs(t *testing.T) {
+	for _, s := range []string{
+		"Authorization: Bearer abcdef1234567890",
+		"connected to postgres://app:s3cretpw@db:5432/shop",
+		"password=hunter2 user=bob",
+		`{"api_key": "abc123xyz"}`,
+		"DB_PASSWORD=hunter2",
+		"key sk_live_abcdefgh12345678",
+		"aws AKIAIOSFODNN7EXAMPLE",
+		"token ghp_abcdefghijklmnopqrstuvwxyz123456",
+		"slack xoxb-1234567890-abcdef",
+		"jwt eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.abcdefghijkl",
+		"card 4242 4242 4242 4242",
+	} {
+		out := mask(s)
+		for _, leak := range []string{"hunter2", "s3cretpw", "abc123xyz", "abcdef1234567890", "abcdefgh12345678", "AKIAIOSFODNN7", "ghp_abc", "xoxb-1234", "eyJhbGci", "4242 4242"} {
+			if strings.Contains(out, leak) {
+				t.Errorf("%q became %q", s, out)
+			}
+		}
+	}
+	if s := "GET /api/orders 200 in 12ms"; mask(s) != s {
+		t.Errorf("ordinary line changed: %q", mask(s))
+	}
+}
+
+func TestContainerShareOfTheMachineAndRestarts(t *testing.T) {
+	var s dockerStats
+	s.CPU.Usage.Total, s.CPU.System = 2000, 10000
+	s.Memory.Usage, s.Memory.Limit = 300<<20, 1024<<20
+	s.Memory.Stats = map[string]uint64{"inactive_file": 100 << 20}
+	var c Container
+	at := time.Unix(1000, 0)
+	last := fill(&c, s, lastContainer{}, at)
+	if c.CPUPct != 0 || c.MemMB != 200 || c.MemMaxMB != 1024 {
+		t.Fatalf("%+v", c)
+	}
+	s.CPU.Usage.Total, s.CPU.System = 3000, 14000
+	fill(&c, s, last, at.Add(time.Minute))
+	if c.CPUPct != 25 {
+		t.Fatalf("1000 of 4000 ticks is 25%%: %v", c.CPUPct)
+	}
+}
+
+func TestOnlyTheNewestReportsKeepLogsWhileQueued(t *testing.T) {
+	q := NewQueue(&script{})
+	for i := 0; i < queueLogs+5; i++ {
+		q.Add(Batch{ContainerLogs: []LogLine{{Message: "x"}}})
+	}
+	if q.items[0].ContainerLogs != nil || q.items[len(q.items)-1].ContainerLogs == nil {
+		t.Fatal("logs kept in the wrong reports")
+	}
+}
+
+func TestLogBudgetIsSharedSoNoContainerCrowdsOutTheRest(t *testing.T) {
+	if logTail(1) != logTailMax || logTail(8) != 100 {
+		t.Fatal(logTail(1), logTail(8))
+	}
+	if logTail(maxContainers)*maxContainers > logBatchLines {
+		t.Fatal("a full server overflows the batch")
 	}
 }

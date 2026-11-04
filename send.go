@@ -15,6 +15,7 @@ import (
 
 const (
 	queueMax   = 60 // an hour of reports, kept while LoggerAI can't be reached
+	queueLogs  = 8  // logs are big, so only the newest few reports keep theirs
 	sendPerRun = 20 // catching up after an outage goes gently
 	backoffMax = 5 * time.Minute
 )
@@ -97,6 +98,9 @@ func (q *Queue) Add(b Batch) {
 	q.items = append(q.items, b)
 	if len(q.items) > queueMax {
 		q.items = q.items[len(q.items)-queueMax:]
+	}
+	if n := len(q.items) - queueLogs - 1; n >= 0 {
+		q.items[n].ContainerLogs = nil
 	}
 }
 

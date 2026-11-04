@@ -21,6 +21,7 @@ var version = "dev"
 const (
 	sampleEvery = 15 * time.Second
 	reportEvery = 60 * time.Second
+	logsEvery   = 15 * time.Second
 	shutdownFor = 3 * time.Second
 )
 
@@ -80,7 +81,13 @@ func oneReport(cfg Config) (Batch, error) {
 	if err := c.Sample(time.Now()); err != nil {
 		return Batch{}, err
 	}
-	return c.Report(cfg, time.Now())
+	b, err := c.Report(cfg, time.Now())
+	if err == nil && cfg.Docker {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		b.Containers = NewDocker(cfg.DockerSock, cfg.Host, false).Containers(ctx, time.Now())
+	}
+	return b, err
 }
 
 func printReport(cfg Config) error {
@@ -117,10 +124,18 @@ func run(cfg Config) error {
 	if err := c.Sample(time.Now()); err != nil {
 		return err
 	}
+	var docker *Docker
+	if cfg.Docker {
+		docker = NewDocker(cfg.DockerSock, cfg.Host, cfg.DockerLogs)
+		docker.Containers(ctx, time.Now()) // a first reading, so the first report has rates
+		docker.Logs(ctx, time.Now())
+	}
 	samples := time.NewTicker(sampleEvery)
 	reports := time.NewTicker(reportEvery)
+	logs := time.NewTicker(logsEvery)
 	defer samples.Stop()
 	defer reports.Stop()
+	defer logs.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -135,11 +150,29 @@ func run(cfg Config) error {
 			if err := c.Sample(now); err != nil {
 				log.Printf("reading the machine failed: %v", err)
 			}
+		case now := <-logs.C:
+			if docker == nil || !docker.logs {
+				continue
+			}
+			read, cancel := context.WithTimeout(ctx, 10*time.Second)
+			lines := docker.Logs(read, now)
+			cancel()
+			if len(lines) > 0 {
+				q.Add(Batch{Environment: cfg.Environment, Service: "agent", Host: cfg.Host, Hosts: []Host{}, Servers: []Server{}, ContainerLogs: lines})
+				send, cancel := context.WithTimeout(ctx, 10*time.Second)
+				q.Flush(send, now)
+				cancel()
+			}
 		case now := <-reports.C:
 			b, err := c.Report(cfg, now)
 			if err != nil {
 				log.Printf("building a report failed: %v", err)
 				continue
+			}
+			if docker != nil {
+				read, cancel := context.WithTimeout(ctx, 20*time.Second)
+				b.Containers = docker.Containers(read, now)
+				cancel()
 			}
 			q.Add(b)
 			send, cancel := context.WithTimeout(ctx, 45*time.Second)

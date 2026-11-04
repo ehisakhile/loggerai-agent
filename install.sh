@@ -15,6 +15,7 @@ USER_NAME=loggerai
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'LoggerAI agent: %s\n' "$*" >&2; exit 1; }
+has_terminal() { (: </dev/tty) 2>/dev/null; } # it can exist without being openable, under cron or a provisioning tool
 
 [ "$(uname -s)" = Linux ] || die "this agent runs on Linux."
 [ "$(id -u)" = 0 ] || die "run this as root, with sudo."
@@ -38,7 +39,7 @@ esac
 
 KEY="${LOGGERAI_KEY:-}"
 if [ -z "$KEY" ] && [ ! -f "$CONF" ]; then
-  [ -r /dev/tty ] || die "set LOGGERAI_KEY to your project's secret key."
+  has_terminal || die "set LOGGERAI_KEY to your project's secret key."
   printf 'Project secret key (sk_live_...): ' >/dev/tty
   stty -echo </dev/tty 2>/dev/null || true
   read -r KEY </dev/tty
@@ -49,6 +50,26 @@ case "$KEY" in
   "" | sk_*) ;;
   *) die "that isn't a secret key. Find it under Connect in LoggerAI: it starts sk_live_." ;;
 esac
+
+# Docker is opt-in: its socket can't be opened read-only, so being allowed to use it is a real grant.
+DOCKER="${LOGGERAI_DOCKER:-}"
+DOCKER_LOGS="${LOGGERAI_DOCKER_LOGS:-}"
+[ ! -f "$CONF" ] || { [ -n "$DOCKER" ] || DOCKER="$(sed -n 's/^docker=//p' "$CONF")"; [ -n "$DOCKER_LOGS" ] || DOCKER_LOGS="$(sed -n 's/^docker_logs=//p' "$CONF")"; }
+if [ -z "$DOCKER" ] && [ -S /var/run/docker.sock ] && has_terminal; then
+  say "Docker is installed here. To watch containers the agent joins the docker group, which Docker treats as root access."
+  say "The agent only ever reads from Docker, but that limit is in the agent, not in Docker."
+  printf 'Watch containers? [y/N] ' >/dev/tty
+  read -r ANSWER </dev/tty
+  case "$ANSWER" in y* | Y*) DOCKER=true ;; *) DOCKER=false ;; esac
+  if [ "$DOCKER" = true ]; then
+    printf 'Also send what they log? Known secrets are masked first. [y/N] ' >/dev/tty
+    read -r ANSWER </dev/tty
+    case "$ANSWER" in y* | Y*) DOCKER_LOGS=true ;; *) DOCKER_LOGS=false ;; esac
+  fi
+fi
+if [ "$DOCKER" = true ]; then
+  getent group docker >/dev/null 2>&1 || die "there's no docker group here, so the agent can't read Docker."
+fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -87,6 +108,13 @@ if [ -n "$KEY" ]; then
   chown root:"$USER_NAME" "$CONF"
   chmod 0640 "$CONF"
 fi
+if [ -f "$CONF" ]; then
+  sed -i '/^docker=/d;/^docker_logs=/d' "$CONF"
+  [ "$DOCKER" != true ] || say "docker=true" >>"$CONF"
+  [ "$DOCKER_LOGS" != true ] || say "docker_logs=true" >>"$CONF"
+fi
+GROUPS_LINE=""
+[ "$DOCKER" != true ] || GROUPS_LINE="SupplementaryGroups=docker"
 
 cat >"$UNIT" <<UNIT
 [Unit]
@@ -96,6 +124,7 @@ After=network.target
 [Service]
 ExecStart=$BIN run
 User=$USER_NAME
+$GROUPS_LINE
 Restart=always
 RestartSec=10
 NoNewPrivileges=yes
@@ -123,7 +152,8 @@ systemctl daemon-reload
 systemctl enable loggerai-agent >/dev/null 2>&1
 systemctl restart loggerai-agent
 
-if su -s /bin/sh "$USER_NAME" -c "$BIN check"; then
+# Docker off for this test: only the service itself is in the docker group.
+if su -s /bin/sh "$USER_NAME" -c "LOGGERAI_DOCKER=false $BIN check"; then
   say "The LoggerAI agent is running. Logs: journalctl -u loggerai-agent"
 else
   say "The agent is installed but couldn't report. See the message above, then: journalctl -u loggerai-agent"
