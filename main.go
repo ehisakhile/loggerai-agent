@@ -87,6 +87,15 @@ func oneReport(cfg Config) (Batch, error) {
 		defer cancel()
 		b.Containers = NewDocker(cfg.DockerSock, cfg.Host, false).Containers(ctx, time.Now())
 	}
+	if err == nil && (cfg.NginxStatus != "" || cfg.MySQLDSN != "") {
+		s, serr := NewServices(cfg)
+		if serr != nil {
+			return b, serr
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		b.Services = s.Read(ctx, time.Now())
+	}
 	return b, err
 }
 
@@ -130,6 +139,13 @@ func run(cfg Config) error {
 		docker.Containers(ctx, time.Now()) // a first reading, so the first report has rates
 		docker.Logs(ctx, time.Now())
 	}
+	services, err := NewServices(cfg)
+	if err != nil {
+		return err
+	}
+	if services.Enabled() {
+		services.Read(ctx, time.Now()) // a first reading, so the first report has rates
+	}
 	samples := time.NewTicker(sampleEvery)
 	reports := time.NewTicker(reportEvery)
 	logs := time.NewTicker(logsEvery)
@@ -172,6 +188,11 @@ func run(cfg Config) error {
 			if docker != nil {
 				read, cancel := context.WithTimeout(ctx, 20*time.Second)
 				b.Containers = docker.Containers(read, now)
+				cancel()
+			}
+			if services.Enabled() {
+				read, cancel := context.WithTimeout(ctx, 20*time.Second)
+				b.Services = services.Read(read, now)
 				cancel()
 			}
 			q.Add(b)

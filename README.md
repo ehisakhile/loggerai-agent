@@ -1,6 +1,6 @@
 # LoggerAI server agent
 
-A small program that shows you what your Linux servers are doing, in [LoggerAI](https://loggerai.uk): CPU, memory, disks, network, the busiest processes and, if you allow it, Docker containers and their logs. It's one file with nothing else to install.
+A small program that shows you what your Linux servers are doing, in [LoggerAI](https://loggerai.uk): CPU, memory, disks, network, the busiest processes and, if you allow it, Docker containers and their logs. It's one file with nothing else to install. It can also watch nginx and MySQL.
 
 ## Install
 
@@ -54,6 +54,42 @@ With logs on, it also sends what your containers write to stdout and stderr, eve
 - A very busy container sends its latest lines each time, so some can be skipped. Containers share the budget evenly, so a loud one can't silence the others.
 - LoggerAI keeps them for 14 days, and needs ClickHouse to store them.
 
+## nginx and MySQL
+
+Both are off until you set them, and each needs one line in `/etc/loggerai/agent.conf`. Restart the service after changing it.
+
+**nginx** needs its status page, on this machine only:
+
+```nginx
+server {
+    listen 127.0.0.1:8080;
+    location /nginx_status { stub_status; allow 127.0.0.1; deny all; }
+}
+```
+
+```
+nginx_status=http://127.0.0.1:8080/nginx_status
+```
+
+It sends connections, requests per second and dropped connections.
+
+**MySQL** needs its own login. This one can read server status and nothing else, so it can't see your tables or your data:
+
+```sql
+CREATE USER 'loggerai'@'localhost' IDENTIFIED BY 'a-long-random-password' WITH MAX_USER_CONNECTIONS 2;
+GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'loggerai'@'localhost';
+```
+
+```
+mysql_dsn=loggerai:a-long-random-password@tcp(127.0.0.1:3306)/
+```
+
+It sends connections, queries per second, slow queries, failed logins, cache hit rate and replica lag. These are counters only: it never reads query text, table names or data. It also works with MariaDB.
+
+In Docker, publish the port on `127.0.0.1` and use that address.
+
+Your first service turns on alerts for a service that stops answering, and for MySQL running out of connections.
+
 ## What it doesn't do
 
 - It never sends command lines, environment variables or file contents.
@@ -82,6 +118,8 @@ In `/etc/loggerai/agent.conf`, or as environment variables. Restart the service 
 | `docker` | `LOGGERAI_DOCKER` | off |
 | `docker_logs` | `LOGGERAI_DOCKER_LOGS` | off |
 | `docker_socket` | `LOGGERAI_DOCKER_SOCKET` | `/var/run/docker.sock` |
+| `nginx_status` | `LOGGERAI_NGINX_STATUS` | off |
+| `mysql_dsn` | `LOGGERAI_MYSQL_DSN` | off |
 
 `loggerai-agent check` sends one report, to test the key and connection.
 

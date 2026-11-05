@@ -32,6 +32,7 @@ type Batch struct {
 
 	Containers    []Container `json:"containers,omitempty"`
 	ContainerLogs []LogLine   `json:"container_logs,omitempty"`
+	Services      []Service   `json:"services,omitempty"`
 }
 
 type Host struct {

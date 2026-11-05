@@ -112,6 +112,14 @@ if [ -f "$CONF" ]; then
   sed -i '/^docker=/d;/^docker_logs=/d' "$CONF"
   [ "$DOCKER" != true ] || say "docker=true" >>"$CONF"
   [ "$DOCKER_LOGS" != true ] || say "docker_logs=true" >>"$CONF"
+  if [ -n "${LOGGERAI_NGINX_STATUS:-}" ]; then
+    sed -i '/^nginx_status=/d' "$CONF"
+    say "nginx_status=$LOGGERAI_NGINX_STATUS" >>"$CONF"
+  fi
+  if [ -n "${LOGGERAI_MYSQL_DSN:-}" ]; then
+    sed -i '/^mysql_dsn=/d' "$CONF"
+    say "mysql_dsn=$LOGGERAI_MYSQL_DSN" >>"$CONF"
+  fi
 fi
 GROUPS_LINE=""
 [ "$DOCKER" != true ] || GROUPS_LINE="SupplementaryGroups=docker"

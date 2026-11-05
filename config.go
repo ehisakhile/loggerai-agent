@@ -24,6 +24,8 @@ type Config struct {
 	Docker      bool // read containers: off unless the installer was told to
 	DockerLogs  bool // and send what they log
 	DockerSock  string
+	NginxStatus string // nginx's stub_status page
+	MySQLDSN    string // a login that can read status: user:password@tcp(127.0.0.1:3306)/
 }
 
 func procRoot() string {
@@ -92,6 +94,8 @@ func loadConfig(needKey bool) (Config, error) {
 		Docker:      pick("docker", "LOGGERAI_DOCKER", "") == "true",
 		DockerLogs:  pick("docker_logs", "LOGGERAI_DOCKER_LOGS", "") == "true",
 		DockerSock:  pick("docker_socket", "LOGGERAI_DOCKER_SOCKET", ""),
+		NginxStatus: pick("nginx_status", "LOGGERAI_NGINX_STATUS", ""),
+		MySQLDSN:    pick("mysql_dsn", "LOGGERAI_MYSQL_DSN", ""),
 	}
 	if cfg.Host == "" {
 		cfg.Host = "server"

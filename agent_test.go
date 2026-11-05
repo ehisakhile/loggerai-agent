@@ -468,3 +468,69 @@ func TestLogBudgetIsSharedSoNoContainerCrowdsOutTheRest(t *testing.T) {
 		t.Fatal("a full server overflows the batch")
 	}
 }
+
+func TestNginxStatus(t *testing.T) {
+	n, err := parseNginx([]byte("Active connections: 291 \nserver accepts handled requests\n 16630948 16630946 31070465 \nReading: 6 Writing: 179 Waiting: 106 \n"))
+	if err != nil || n.active != 291 || n.accepts != 16630948 || n.requests != 31070465 || n.writing != 179 {
+		t.Fatalf("%+v %v", n, err)
+	}
+	if _, err := parseNginx([]byte("<html>welcome to nginx</html>")); err == nil {
+		t.Fatal("an ordinary page was taken for the status page")
+	}
+}
+
+func TestNginxRatesAndARestart(t *testing.T) {
+	calls := []string{"Active connections: 1\nserver accepts handled requests\n 100 100 1000\nReading: 0 Writing: 1 Waiting: 0\n",
+		"Active connections: 2\nserver accepts handled requests\n 160 150 1600\nReading: 0 Writing: 1 Waiting: 1\n",
+		"Active connections: 1\nserver accepts handled requests\n 5 5 9\nReading: 0 Writing: 1 Waiting: 0\n"}
+	i := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(calls[i])); i++ }))
+	defer srv.Close()
+	s, _ := NewServices(Config{Host: "h", NginxStatus: srv.URL})
+	at := time.Unix(1000, 0)
+	s.Read(context.Background(), at)
+	m := s.Read(context.Background(), at.Add(time.Minute))[0].Metrics
+	if m["requests_per_s"] != 10 || m["dropped"] != 10 || m["active"] != 2 {
+		t.Fatal(m)
+	}
+	if m = s.Read(context.Background(), at.Add(2*time.Minute))[0].Metrics; m["requests_per_s"] != 0 {
+		t.Fatalf("a restart isn't a burst of negative traffic: %v", m)
+	}
+}
+
+func TestADownServiceIsAResultNotACrash(t *testing.T) {
+	s, _ := NewServices(Config{Host: "h", NginxStatus: "http://127.0.0.1:1/nginx_status"})
+	got := s.Read(context.Background(), time.Now())
+	if len(got) != 1 || got[0].Up || got[0].Kind != "nginx" || got[0].Error != "connection refused" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestMySQLNumbers(t *testing.T) {
+	last := map[string]uint64{"Questions": 1000, "Slow_queries": 2, "Innodb_buffer_pool_reads": 10, "Innodb_buffer_pool_read_requests": 1000}
+	now := map[string]uint64{"Questions": 1600, "Slow_queries": 5, "Threads_connected": 90, "Innodb_buffer_pool_reads": 20, "Innodb_buffer_pool_read_requests": 2000}
+	s := &Services{last: map[string]reading{"mysql": {time.Unix(0, 0), last}}}
+	perSecond, diff := s.rates("mysql", time.Unix(60, 0), now)
+	m := mysqlMetrics(now, 100, perSecond, diff)
+	if m["queries_per_s"] != 10 || m["slow_queries"] != 3 || m["connections_pct"] != 90 || m["buffer_hit_pct"] != 99 {
+		t.Fatal(m)
+	}
+}
+
+func TestABadLoginNeverQuotesThePassword(t *testing.T) {
+	_, err := NewServices(Config{MySQLDSN: "loggerai:hunter2@tcp(127.0.0.1:3306"})
+	if err == nil || strings.Contains(err.Error(), "hunter2") {
+		t.Fatal(err)
+	}
+	if got := cleanError(errors.New("dial failed password=hunter2")); strings.Contains(got, "hunter2") {
+		t.Fatal(got)
+	}
+}
+
+func TestMySQLQueriesOnlyRead(t *testing.T) {
+	for _, q := range []string{mysqlStatus, mysqlLimits, mysqlReplica, mysqlOldServer} {
+		if !strings.HasPrefix(q, "SHOW ") && !strings.HasPrefix(q, "SELECT @@") {
+			t.Error(q)
+		}
+	}
+}
