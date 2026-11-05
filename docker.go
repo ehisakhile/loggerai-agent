@@ -51,6 +51,7 @@ type Container struct {
 	TS        float64 `json:"ts"`
 	Host      string  `json:"host"`
 	Name      string  `json:"name"`
+	Hostname  string  `json:"hostname,omitempty"`
 	Image     string  `json:"image"`
 	State     string  `json:"state"`
 	Health    string  `json:"health,omitempty"`
@@ -97,7 +98,8 @@ type dockerInspect struct {
 		} `json:"Health"`
 	} `json:"State"`
 	Config struct {
-		Tty bool `json:"Tty"`
+		Tty      bool   `json:"Tty"`
+		Hostname string `json:"Hostname"`
 	} `json:"Config"`
 }
 
@@ -280,6 +282,7 @@ func (d *Docker) read(ctx context.Context, it dockerListItem, now time.Time) Con
 	var in dockerInspect
 	if err := d.getJSON(ctx, "/containers/"+it.ID+"/json", nil, &in); err == nil {
 		c.Restarts, c.ExitCode, c.OOMKilled, c.StartedAt = in.RestartCount, in.State.ExitCode, in.State.OOMKilled, in.State.StartedAt
+		c.Hostname = in.Config.Hostname
 		if in.State.Health != nil {
 			c.Health = in.State.Health.Status
 		}

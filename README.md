@@ -44,7 +44,7 @@ This is off unless you turn it on. If Docker is installed, the installer asks. I
 
 **Know what you're granting.** Docker's socket can't be opened read-only, so anything that can use it can control Docker, which is as good as root on that machine. Turning this on adds the agent's service to the `docker` group. The agent only reads: anything except listing containers and reading their details, stats and logs is refused in its code, and there's a test for that. But that limit is in the agent, not in Docker. To enforce it outside the agent, point `docker_socket` at a read-only socket proxy.
 
-With it on, the agent sends each container's name, image, state, health, restarts, CPU, memory and network. Docker's answers also contain each container's environment variables and command. The agent skips those fields when it reads the answer, so it never keeps or sends them.
+With it on, the agent sends each container's name, host name, image, state, health, restarts, CPU, memory and network. Docker's answers also contain each container's environment variables and command. The agent skips those fields when it reads the answer, so it never keeps or sends them.
 
 With logs on, it also sends what your containers write to stdout and stderr, every 15 seconds:
 
