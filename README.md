@@ -52,7 +52,7 @@ With logs on, it also sends what your containers write to stdout and stderr, eve
 - To keep a container's logs out completely, give it the label `loggerai.logs=false`.
 - Logs start from when the agent starts. It doesn't send old ones.
 - A very busy container sends its latest lines each time, so some can be skipped. Containers share the budget evenly, so a loud one can't silence the others.
-- LoggerAI keeps them for 14 days, and needs ClickHouse to store them.
+- LoggerAI keeps them for 24 hours, and needs ClickHouse to store them.
 
 ## nginx and MySQL
 
